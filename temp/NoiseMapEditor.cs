@@ -26,14 +26,26 @@ public partial class NoiseMapEditor : Area3D
 	{
 		if (map == null) return;
 
-		int total_blocks = 0;
+		int tblocks = 0, tchunks = 0, tfaces = 0;
 
 		foreach (OctNode node in map.nodes)
 		{
-			total_blocks += node.total_blocks;
+			int blocks = node.total_blocks;
+			if (blocks > 0)
+			{
+				tblocks += blocks;
+				tfaces += node.face_count;
+				tchunks++;
+			}
 		}
 
-		GD.Print("Total blocks: ", total_blocks, " @ ", total_blocks / 1024, "Kb");
+		int chbuf = map.lod * map.lod * map.lod / 8;
+		int chtot = tchunks * chbuf / 1024 / 1024;
+
+		int vcnt = tfaces * 6 * 36 / 1024 / 1024;
+
+		GD.Print($"Total blocks: {tblocks}, faces: {tfaces}, chunks {tchunks}");
+		GD.Print($"Chunk buffers: {chtot}Mb, Vertices: {vcnt}Mb");
 	}
 
 	void SetThreadsCount(int count)
@@ -67,6 +79,15 @@ public partial class NoiseMapEditor : Area3D
 			_close_threads();
 			GD.Print($"Threads closed.");
 		}
+	}
+
+	void _close_threads()
+	{
+		foreach (Thread thread in threads)
+		{
+			if (thread.IsAlive) thread.Join();
+		}
+		threads = new ();
 	}
 
 	// Local space
@@ -162,14 +183,14 @@ public partial class NoiseMapEditor : Area3D
 			{
 				for (int x = 0; x < max_pos.X; x += map.lod)
 				{
-                    map.nodes[i] = new OctNode
-                    {
-                        Position = new Vector3I(x, y, z),
-                        lod = map.lod,
-                        Size = new Vector3I(map.Size.X, map.Size.Y, map.Size.Z)
-                    };
+					map.nodes[i] = new OctNode
+					{
+						Position = new Vector3I(x, y, z),
+						lod = map.lod,
+						Size = new Vector3I(map.Size.X, map.Size.Y, map.Size.Z)
+					};
 
-                    i++;
+					i++;
 				}
 			}
 		}
@@ -198,18 +219,6 @@ public partial class NoiseMapEditor : Area3D
 			threads.Add(thread);
 			thread.Start();
 		}
-	}
-
-	void _close_threads()
-	{
-		foreach (Thread thread in threads)
-		{
-			if (thread.IsAlive)
-			{
-				thread.Join();
-			}
-		}
-		threads = new ();
 	}
 
 	//_
@@ -267,9 +276,11 @@ public partial class NoiseMapEditor : Area3D
 
 			if (node_index != -1)
 			{
-				_process_noise_node_mesh(thread_id,node_index);
+				_process_mesh_node(thread_id,node_index);
 			}
 		} while (node_index != -1);
+
+		GD.Print($"{thread_id} Finished...");
 	}
 
 	//_
@@ -301,7 +312,7 @@ public partial class NoiseMapEditor : Area3D
 
 					bool  block      = noise_add > map.AddBlocks._range.X && noise_add < map.AddBlocks._range.Y;
 
-					if (block)
+					if (block && map.SubBlocks._noise != null)
 					{						
 						value = (map.SubBlocks._noise.GetNoise3D(local_x, local_y, local_z) + 1.0f) / 2.0f;
 
@@ -328,17 +339,9 @@ public partial class NoiseMapEditor : Area3D
 			}
 		}
 
-		GD.Print($"Thread {thread_id} node {node_index}, {node.Position}, {node.total_blocks} blocks");
-	}
-
-	// TODO count verts before processing faces
-	void _process_noise_node_mesh(int thread_id, int node_index)
-	{
-		OctNode node = map.nodes[node_index];
-
 		if (node.total_blocks == 0) return;
 
-		int face_count = 0;
+		node.face_count = 0;
 
 		for (int z = 0; z < map.lod; z++)
 		{
@@ -354,42 +357,38 @@ public partial class NoiseMapEditor : Area3D
 					{
 						int nx = x + node.Position.X;
 
-						bool x_neg = GetBlock(nx - 1, ny, nz);
-						bool x_pos = GetBlock(nx + 1, ny, nz);
-						bool y_neg = GetBlock(nx, ny - 1, nz);
-						bool y_pos = GetBlock(nx, ny + 1, nz);
-						bool z_neg = GetBlock(nx, ny, nz - 1);
-						bool z_pos = GetBlock(nx, ny, nz + 1);
+						bool x_neg = x > 0           ? node.GetBlock(x - 1, y, z) : GetBlock(nx - 1, ny, nz);
+						bool x_pos = x < map.lod - 1 ? node.GetBlock(x + 1, y, z) : GetBlock(nx + 1, ny, nz);
+						bool y_neg = y > 0			 ? node.GetBlock(x, y - 1, z) : GetBlock(nx, ny - 1, nz);
+						bool y_pos = y < map.lod - 1 ? node.GetBlock(x, y + 1, z) : GetBlock(nx, ny + 1, nz);
+						bool z_neg = z > 0 			 ? node.GetBlock(x, y, z - 1) : GetBlock(nx, ny, nz - 1);
+						bool z_pos = z < map.lod - 1 ? node.GetBlock(x, y, z + 1) : GetBlock(nx, ny, nz + 1);
 
-						if (!x_neg) face_count++;// _add_face(node, x, y, z, _face_xneg, 0); }
-						if (!x_pos) face_count++;// _add_face(node, x, y, z, _face_xpos, 1); }
-						if (!y_neg) face_count++;// _add_face(node, x, y, z, _face_ypos, 2); }
-						if (!y_pos) face_count++;//_add_face(node, x, y, z, _face_yneg, 3); }
-						if (!z_neg) face_count++;//_add_face(node, x, y, z, _face_zpos, 5); }
-						if (!z_pos) face_count++;//_add_face(node, x, y, z, _face_zneg, 4); }
-						// bit 2 is reserved for future use
+						if (!x_neg) node.face_count++;
+						if (!x_pos) node.face_count++;
+						if (!y_neg) node.face_count++;
+						if (!y_pos) node.face_count++;
+						if (!z_neg) node.face_count++;
+						if (!z_pos) node.face_count++;
 					}
-					
-					//node.SetBlock(x, y, z, block);
 				}
 			}
 		}
 
-		node._vertices = new Vector3[face_count * 6];
-		node._normals  = new Vector3[face_count * 6];
-		node._uvs      = new Vector2[face_count * 6];
-		node._colors   = new Color  [face_count * 6];
-		//node._vertices.Initialize();
-		//node._normals.Initialize();
-		//node._uvs.Initialize();
-		//node._colors.Initialize();
-		for (int index = 0; index < face_count * 6; index++)
-		{
-			node._vertices[index] = new();
-			node._normals[index] = new();
-			node._uvs[index] = new();
-			node._colors[index] = new();
-		}
+		// here we are done with the actual cache...
+
+		GD.Print($"Thread {thread_id} node {node_index}, {node.Position}, {node.total_blocks} blocks");
+	}
+
+	// TODO count verts before processing faces
+	void _process_mesh_node(int thread_id, int node_index)
+	{
+		OctNode node = map.nodes[node_index];
+
+		if (node.total_blocks == 0) return;
+		
+		MeshResource mr = new();
+		mr.init(node.face_count);
 
 		int i = 0;
 
@@ -401,42 +400,46 @@ public partial class NoiseMapEditor : Area3D
 			{
 				int ny = y + node.Position.Y;
 
+				float sample_offset = 1.0f / node.Size.Y * (node.Position.Y + y);
+				Color color = map.gradient.Sample(sample_offset);
+
 				for (int x = 0; x < map.lod; x++)
 				{
 					if (node.GetBlock(x, y, z))
 					{
 						int nx = x + node.Position.X;
 
-						bool x_neg = GetBlock(nx - 1, ny, nz);
-						bool x_pos = GetBlock(nx + 1, ny, nz);
-						bool y_neg = GetBlock(nx, ny - 1, nz);
-						bool y_pos = GetBlock(nx, ny + 1, nz);
-						bool z_neg = GetBlock(nx, ny, nz - 1);
-						bool z_pos = GetBlock(nx, ny, nz + 1);
+						bool x_neg = x > 0           ? node.GetBlock(x - 1, y, z) : GetBlock(nx - 1, ny, nz);
+						bool x_pos = x < map.lod - 1 ? node.GetBlock(x + 1, y, z) : GetBlock(nx + 1, ny, nz);
+						bool y_neg = y > 0			 ? node.GetBlock(x, y - 1, z) : GetBlock(nx, ny - 1, nz);
+						bool y_pos = y < map.lod - 1 ? node.GetBlock(x, y + 1, z) : GetBlock(nx, ny + 1, nz);
+						bool z_neg = z > 0 			 ? node.GetBlock(x, y, z - 1) : GetBlock(nx, ny, nz - 1);
+						bool z_pos = z < map.lod - 1 ? node.GetBlock(x, y, z + 1) : GetBlock(nx, ny, nz + 1);
 
-						if (!x_neg) { _add_face(i, node, x, y, z, _face_xneg, 0); i += 6; }
-						if (!x_pos) { _add_face(i, node, x, y, z, _face_xpos, 1); i += 6; }
-						if (!y_neg) { _add_face(i, node, x, y, z, _face_ypos, 2); i += 6; }
-						if (!y_pos) { _add_face(i, node, x, y, z, _face_yneg, 3); i += 6; }
-						if (!z_neg) { _add_face(i, node, x, y, z, _face_zpos, 5); i += 6; }
-						if (!z_pos) { _add_face(i, node, x, y, z, _face_zneg, 4); i += 6; }
+						if (!x_neg) { _add_face(i, node, x, y, z, _face_xneg, 0, color, mr); i += 6; }
+						if (!x_pos) { _add_face(i, node, x, y, z, _face_xpos, 1, color, mr); i += 6; }
+						if (!y_neg) { _add_face(i, node, x, y, z, _face_ypos, 2, color, mr); i += 6; }
+						if (!y_pos) { _add_face(i, node, x, y, z, _face_yneg, 3, color, mr); i += 6; }
+						if (!z_neg) { _add_face(i, node, x, y, z, _face_zpos, 5, color, mr); i += 6; }
+						if (!z_pos) { _add_face(i, node, x, y, z, _face_zneg, 4, color, mr); i += 6; }
 					}
 				}
 			}
 		}
 
-		MeshInstance3D mesh_instance = new();
-		mesh_instance.Position = node.Position;
+		//MeshInstance3D mesh_instance = new();
+		//mesh_instance.Position = node.Position;
+		mr.Position = node.Position;
 
 		ArrayMesh mesh = new();
 
 		Godot.Collections.Array arrays = [];
 		arrays.Resize((int)Mesh.ArrayType.Max);
 
-		arrays[(int)Mesh.ArrayType.Vertex] = node._vertices;
-		arrays[(int)Mesh.ArrayType.Normal] = node._normals;
-		arrays[(int)Mesh.ArrayType.TexUV] = node._uvs;
-		arrays[(int)Mesh.ArrayType.Color] = node._colors;
+		arrays[(int)Mesh.ArrayType.Vertex] = mr._vertices;
+		arrays[(int)Mesh.ArrayType.Normal] = mr._normals;
+		arrays[(int)Mesh.ArrayType.TexUV] = mr._uvs;
+		arrays[(int)Mesh.ArrayType.Color] = mr._colors;
 
 		Mesh.ArrayFormat flags = Mesh.ArrayFormat.FormatVertex | 
 								 Mesh.ArrayFormat.FormatNormal | 
@@ -446,84 +449,48 @@ public partial class NoiseMapEditor : Area3D
 		mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, null, null, flags);
 		if (map.material != null) mesh.SurfaceSetMaterial(0, map.material);
 
-		mesh_instance.Mesh = mesh;
+		mr.Mesh = mesh;
 
 		mutex_meshes.Lock();
-		meshes.Add(mesh_instance);
+		meshes.Add(mr);
 		mutex_meshes.Unlock();
 
-		CallDeferred("add_child", mesh_instance);
+		CallDeferred("add_child", mr);
 
-		GD.Print($"Thread {thread_id} node {node_index}, {node.Position}, meshing {node.total_blocks} blocks");
+		GD.Print($"Node {node_index}, pos:{node.Position}, Mesh {node.total_blocks} blocks, {node.face_count} faces. Finished...");
 	}
 
-	void _add_face(int i, OctNode node, int x, int y, int z, List<Vector3> face_vertices, int face_index)
+	void _add_face(int i, OctNode node, int x, int y, int z, List<Vector3> face_vertices, int face_index, Color color, MeshResource mr)
 	{
 		Vector3 offset = new Vector3(x, y, z);
-		node._vertices[i] = face_vertices[0] + offset;
-		node._vertices[i+1] = face_vertices[1] + offset;
-		node._vertices[i+2] = face_vertices[2] + offset;
 
-		node._vertices[i+3] = face_vertices[0] + offset;
-		node._vertices[i+4] = face_vertices[2] + offset;
-		node._vertices[i+5] = face_vertices[3] + offset;
-		//node._vertices.Add(new Vector3(face_vertices[0].X + x, face_vertices[0].Y + y, face_vertices[0].Z + z));
-		//node._vertices.Add(new Vector3(face_vertices[1].X + x, face_vertices[1].Y + y, face_vertices[1].Z + z));
-		//node._vertices.Add(new Vector3(face_vertices[2].X + x, face_vertices[2].Y + y, face_vertices[2].Z + z));
-
-		//node._vertices.Add(new Vector3(face_vertices[0].X + x, face_vertices[0].Y + y, face_vertices[0].Z + z));
-		//node._vertices.Add(new Vector3(face_vertices[2].X + x, face_vertices[2].Y + y, face_vertices[2].Z + z));
-		//node._vertices.Add(new Vector3(face_vertices[3].X + x, face_vertices[3].Y + y, face_vertices[3].Z + z));
+		mr._vertices[i]   = face_vertices[0] + offset;
+		mr._vertices[i+1] = face_vertices[1] + offset;
+		mr._vertices[i+2] = face_vertices[2] + offset;
+		mr._vertices[i+3] = face_vertices[0] + offset;
+		mr._vertices[i+4] = face_vertices[2] + offset;
+		mr._vertices[i+5] = face_vertices[3] + offset;
 		
-		node._normals[i] = _face_normals[face_index];
-		node._normals[i+1] = _face_normals[face_index];
-		node._normals[i+2] = _face_normals[face_index];
+		mr._normals[i]   = _face_normals[face_index];
+		mr._normals[i+1] = _face_normals[face_index];
+		mr._normals[i+2] = _face_normals[face_index];
+		mr._normals[i+3] = _face_normals[face_index];
+		mr._normals[i+4] = _face_normals[face_index];
+		mr._normals[i+5] = _face_normals[face_index];
 
-		node._normals[i+3] = _face_normals[face_index];
-		node._normals[i+4] = _face_normals[face_index];
-		node._normals[i+5] = _face_normals[face_index];
-
-		//node._normals.Add(_face_normals[face_index]);
-		//node._normals.Add(_face_normals[face_index]);
-		//node._normals.Add(_face_normals[face_index]);
-
-		//node._normals.Add(_face_normals[face_index]);
-		//node._normals.Add(_face_normals[face_index]);
-		//node._normals.Add(_face_normals[face_index]);
+		mr._uvs[i]   = _uvs[0];
+		mr._uvs[i+1] = _uvs[1];
+		mr._uvs[i+2] = _uvs[2];
+		mr._uvs[i+3] = _uvs[3];
+		mr._uvs[i+4] = _uvs[4];
+		mr._uvs[i+5] = _uvs[5];
 		
-		node._uvs[i] = _uvs[0];
-		node._uvs[i+1] = _uvs[1];
-		node._uvs[i+2] = _uvs[2];
-		node._uvs[i+3] = _uvs[3];
-		node._uvs[i+4] = _uvs[4];
-		node._uvs[i+5] = _uvs[5];
-		//node._uvs.Add(new Vector2(0, 1));
-		//node._uvs.Add(new Vector2(0, 0));
-		//node._uvs.Add(new Vector2(1, 0));
-
-		//node._uvs.Add(new Vector2(0, 1));
-		//node._uvs.Add(new Vector2(1, 0));
-		//node._uvs.Add(new Vector2(1, 1));
-
-		float sample_offset = 1.0f / node.Size.Y * (node.Position.Y + y);
-
-		Color color = map.gradient.Sample(sample_offset);
-		
-		node._colors[i] = color;
-		node._colors[i+1] = color;
-		node._colors[i+2] = color;
-		node._colors[i+3] = color;
-		node._colors[i+4] = color;
-		node._colors[i+5] = color;
-		//node._colors.Add(color);
-		//node._colors.Add(color);
-		//node._colors.Add(color);
-
-		//node._colors.Add(color);
-		//node._colors.Add(color);
-		//node._colors.Add(color);
-
-		//return i + 6;
+		mr._colors[i]   = color;
+		mr._colors[i+1] = color;
+		mr._colors[i+2] = color;
+		mr._colors[i+3] = color;
+		mr._colors[i+4] = color;
+		mr._colors[i+5] = color;
 	}
 
 	List<Vector2> _uvs = new()

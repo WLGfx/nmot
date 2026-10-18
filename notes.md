@@ -16,6 +16,8 @@ bit usage
 2 bytes = 0 - 65535
 4 bytes = 0 - 21
 
+Voxel data = 8 voxels per byte @ LOD / 8 on x axis
+
 The noise value could be cut down again between 0 - 15 (4 bits)
 This leaves 12 bits, 6 for faces, 6 free
 

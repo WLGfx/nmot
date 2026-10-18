@@ -1,22 +1,15 @@
 using Godot;
 
-[GlobalClass]
+[Tool, GlobalClass]
 public partial class OctNode : Resource
 {
-	//public OctNode[] Children { get; set; }
 	[Export] public Vector3I  Position;
 	[Export] public Vector3I  Size;
 	[Export] public byte[]    DataBits = null; // 8 blocks per byte
-	
-	// TODO: split arrays into bits and faces and export bits for save cache
 
 	[Export] public int lod;
 	[Export] public int total_blocks;
-
-	public Vector3[] _vertices;
-	public Vector3[] _normals;
-	public Vector2[] _uvs;
-	public Color[]   _colors;
+	[Export] public int face_count;
 
 	// assumes position is local to the chunk data
 	public bool GetBlock(int x, int y, int z)
