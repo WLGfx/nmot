@@ -26,3 +26,4 @@ Can a GPU read bit values... Lets ask one...
 Yes they can with a usampler instead of sampler.
 
 However, this will be done using a compute shader using the noise data.
+((Qpalzm@12))

@@ -5,24 +5,25 @@ using System.Threading;
 [Tool, GlobalClass]
 public partial class NoiseMapEditor : Area3D
 {
-	[ExportToolButton("Generate Cache")] public Callable generate_cache_button => Callable.From(() => generate_cache()); 
-	[ExportToolButton("Save cache")]     public Callable save_cache_button => Callable.From(() => save_cache()); 
-
-	[Export] MapResource map;
-	
-	List<Thread>  threads = new List<Thread>();
-	Godot.Mutex   noise_node_list_mutex = new Godot.Mutex();
-
+	[ExportToolButton("Generate Cache")] public Callable generate_cache_button => Callable.From(() => generate_cache_threaded()); 
 	int node_index_noise;
-	int node_index_mesh;
+	//Godot.Mutex noise_node_list_mutex = new Godot.Mutex();
 
-	List<MeshInstance3D> meshes;
+	[ExportToolButton("Generate mesh")]  public Callable generate_mesh_button => Callable.From(() => generate_mesh_threaded()); 
+	//int node_index_mesh;
+
 	Godot.Mutex mutex_meshes = new();
 
+	List<Thread>  threads = new List<Thread>();
+	
 	Godot.Mutex threads_count_mutex = new Godot.Mutex();
+	List<MeshInstance3D> meshes;
+
+	[Export] MapResource map;
+
 	int threads_count = 0;
 
-	void save_cache()
+	void _show_details_of_cache()
 	{
 		if (map == null) return;
 
@@ -69,16 +70,7 @@ public partial class NoiseMapEditor : Area3D
 	// Called every frame. 'delta' is the elapsed time since the previous frame.
 	public override void _Process(double delta)
 	{
-		noise_node_list_mutex.Lock();
-		int remaining = node_index_noise + node_index_mesh;
-		noise_node_list_mutex.Unlock();
-
-		if (remaining == 0 && GetThreadsCount() > 0)
-		{
-			GD.Print($"All nodes processed, closing threads...");
-			_close_threads();
-			GD.Print($"Threads closed.");
-		}
+		// TODO
 	}
 
 	void _close_threads()
@@ -143,7 +135,7 @@ public partial class NoiseMapEditor : Area3D
 
 	Vector3I max_pos = new Vector3I();
 
-	public void generate_cache()
+	public void generate_cache_threaded()
 	{
 		// check
 		if (map == null) return;
@@ -200,7 +192,7 @@ public partial class NoiseMapEditor : Area3D
 			GD.Print($"ERROR: i {i} != nodes_count {map.nodes_count}");
 		}
 
-		node_index_mesh = map.nodes_count;
+		//node_index_mesh = map.nodes_count;
 		node_index_noise = map.nodes_count;
 
 		// run threads
@@ -219,6 +211,11 @@ public partial class NoiseMapEditor : Area3D
 			threads.Add(thread);
 			thread.Start();
 		}
+	}
+
+	void generate_mesh_threaded()
+	{
+		//
 	}
 
 	//_
@@ -253,11 +250,7 @@ public partial class NoiseMapEditor : Area3D
 
 		GD.Print($"Thread {thread_id} finished generating cache");
 
-		while (GetThreadsCount() > 0)
-		{
-			//GD.Print($"Thread {thread_id} waiting for other threads to finish...");
-			Thread.Sleep(1);
-		}
+		while (GetThreadsCount() > 0) Thread.Sleep(1);
 
 		GD.Print($"Thread {thread_id} creating cached mesh data...");
 
@@ -339,6 +332,17 @@ public partial class NoiseMapEditor : Area3D
 			}
 		}
 
+		// here we are done with the actual cache...
+
+		GD.Print($"Thread {thread_id} node {node_index}, {node.Position}, {node.total_blocks} blocks");
+
+		_show_details_of_cache();
+	}
+
+	void _process_face_counting(int id, int index)
+	{
+		OctNode node = map.nodes[index];
+
 		if (node.total_blocks == 0) return;
 
 		node.face_count = 0;
@@ -374,10 +378,6 @@ public partial class NoiseMapEditor : Area3D
 				}
 			}
 		}
-
-		// here we are done with the actual cache...
-
-		GD.Print($"Thread {thread_id} node {node_index}, {node.Position}, {node.total_blocks} blocks");
 	}
 
 	// TODO count verts before processing faces
@@ -386,7 +386,7 @@ public partial class NoiseMapEditor : Area3D
 		OctNode node = map.nodes[node_index];
 
 		if (node.total_blocks == 0) return;
-		
+
 		MeshResource mr = new();
 		mr.init(node.face_count);
 
