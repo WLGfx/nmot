@@ -6,20 +6,15 @@ using System.Threading;
 public partial class NoiseMapEditor : Area3D
 {
 	[ExportToolButton("Generate Cache")] public Callable generate_cache_button => Callable.From(() => generate_cache_threaded()); 
-	int node_index_noise;
-	//Godot.Mutex noise_node_list_mutex = new Godot.Mutex();
-
 	[ExportToolButton("Generate mesh")]  public Callable generate_mesh_button => Callable.From(() => generate_mesh_threaded()); 
-	//int node_index_mesh;
-
-	Godot.Mutex mutex_meshes = new();
-
-	List<Thread>  threads = new List<Thread>();
 	
-	Godot.Mutex threads_count_mutex = new Godot.Mutex();
-	List<MeshInstance3D> meshes;
-
 	[Export] MapResource map;
+	
+	List<Thread> threads = new List<Thread>();
+	Godot.Mutex threads_mutex = new Godot.Mutex();
+	int thread_node_index;
+
+	List<MeshInstance3D> meshes;
 
 	int threads_count = 0;
 
@@ -51,16 +46,16 @@ public partial class NoiseMapEditor : Area3D
 
 	void SetThreadsCount(int count)
 	{
-		threads_count_mutex.Lock();
+		threads_mutex.Lock();
 		threads_count = count;
-		threads_count_mutex.Unlock();
+		threads_mutex.Unlock();
 	}
 
 	int GetThreadsCount()
 	{
-		threads_count_mutex.Lock();
+		threads_mutex.Lock();
 		int count = threads_count;
-		threads_count_mutex.Unlock();
+		threads_mutex.Unlock();
 		return count;
 	}
 
@@ -135,25 +130,18 @@ public partial class NoiseMapEditor : Area3D
 
 	Vector3I max_pos = new Vector3I();
 
-	public void generate_cache_threaded()
+	bool check_map_setup()
 	{
-		// check
-		if (map == null) return;
+		if (map == null) return true;
+		if (map.lod < 8) return true;
+		if (map.Size.X < 8 || map.Size.Y < 8 || map.Size.Z < 8) return true;
+		return false;
+	}
 
-		if (map.lod < 8)
-		{
-			GD.PrintErr("LOD must be 8 or greater");
-			return;
-		}
-		if (map.Size.X < 8 || map.Size.Y < 8 || map.Size.Z < 8)
-		{
-			GD.PrintErr("Size must be greater than 8");
-			return;
-		}
-
-		// initialize
-
+	void generate_cache_threaded()
+	{
 		_close_threads();
+		if (check_map_setup()) return;
 
 		max_pos.X = (int)((map.Size.X + map.lod - 1) / map.lod) * map.lod;
 		max_pos.Y = (int)((map.Size.Y + map.lod - 1) / map.lod) * map.lod;
@@ -162,7 +150,7 @@ public partial class NoiseMapEditor : Area3D
 		map.nodes_count = (max_pos.X / map.lod) * (max_pos.Y / map.lod) * (max_pos.Z / map.lod);
 		
 		map.nodes = new OctNode[map.nodes_count];
-		if (meshes != null) foreach (MeshInstance3D mi in meshes) mi.QueueFree();
+		if (meshes != null) { foreach (MeshInstance3D mi in meshes) mi.QueueFree(); }
 		meshes = new();
 
 		GD.Print($"Generating cache for {map.MapName} size {max_pos} with lod {map.lod} and total {map.nodes_count} nodes.");
@@ -187,13 +175,10 @@ public partial class NoiseMapEditor : Area3D
 			}
 		}
 
-		if ( i != map.nodes_count )
-		{
-			GD.Print($"ERROR: i {i} != nodes_count {map.nodes_count}");
-		}
+		if ( i != map.nodes_count ) GD.Print($"ERROR: i {i} != nodes_count {map.nodes_count}");
 
 		//node_index_mesh = map.nodes_count;
-		node_index_noise = map.nodes_count;
+		thread_node_index = 0;
 
 		// run threads
 
@@ -215,7 +200,21 @@ public partial class NoiseMapEditor : Area3D
 
 	void generate_mesh_threaded()
 	{
-		//
+		_close_threads();
+		meshes = new();
+
+		thread_node_index = 0;
+		int max_threads = System.Environment.ProcessorCount;
+		if (max_threads < 1) max_threads = 1;
+
+		if (check_map_setup() || map.nodes_count < 1) return;
+
+		for (int index = 0; index < max_threads; index++)
+		{
+			Thread thread = new Thread(new ThreadStart(() => _thread_MAIN_generate_mesh_data(index)));
+			threads.Add(thread);
+			thread.Start();
+		}
 	}
 
 	//_
@@ -226,54 +225,71 @@ public partial class NoiseMapEditor : Area3D
 
 		int node_index = -1;
 
-		do
-		{
-			noise_node_list_mutex.Lock();
+		do {
+			threads_mutex.Lock();
 			node_index = -1;
 
-			if (node_index_noise > 0)
+			if (thread_node_index < map.nodes_count)
 			{
-				node_index_noise--;
-				node_index = node_index_noise;
+				node_index = thread_node_index;
+				thread_node_index++;
 			}
-			
-			noise_node_list_mutex.Unlock();
+			threads_mutex.Unlock();
 
 			if (node_index != -1)
 			{
 				_process_noise_node(thread_id,node_index);
 			}
-		}
-		while (node_index != -1);
+		} while (node_index != -1);
 
 		SetThreadsCount(GetThreadsCount() - 1);
-
-		GD.Print($"Thread {thread_id} finished generating cache");
-
 		while (GetThreadsCount() > 0) Thread.Sleep(1);
 
-		GD.Print($"Thread {thread_id} creating cached mesh data...");
+		GD.Print($"Thread {thread_id} counting faces...");
 
-		do 
-		{
-			noise_node_list_mutex.Lock();
+		do {
+			threads_mutex.Lock();
 			node_index = -1;
 
-			if (node_index_mesh > 0)
+			if (thread_node_index > 0)
 			{
-				node_index_mesh--;
-				node_index = node_index_mesh;
+				thread_node_index--;
+				node_index = thread_node_index;
 			}
-
-			noise_node_list_mutex.Unlock();
+			threads_mutex.Unlock();
 
 			if (node_index != -1)
 			{
-				_process_mesh_node(thread_id,node_index);
+				_process_face_counting(thread_id, node_index);
 			}
 		} while (node_index != -1);
 
 		GD.Print($"{thread_id} Finished...");
+	}
+
+	void _thread_MAIN_generate_mesh_data(int thread_id)
+	{
+		int node_index = -1;
+
+		do
+		{
+			threads_mutex.Lock();
+			node_index = -1;
+
+			if (thread_node_index < map.nodes_count)
+			{
+				node_index = thread_node_index;
+				thread_node_index++;
+			}
+			threads_mutex.Unlock();
+
+			if (node_index != -1)
+			{
+				_process_mesh_node(thread_id, node_index);
+			}
+		} while (node_index != -1);
+
+		GD.Print($"Thread {thread_id} finished...");
 	}
 
 	//_
@@ -387,8 +403,8 @@ public partial class NoiseMapEditor : Area3D
 
 		if (node.total_blocks == 0) return;
 
-		MeshResource mr = new();
-		mr.init(node.face_count);
+		MeshResource mesh_resource = new();
+		mesh_resource.init(node.face_count);
 
 		int i = 0;
 
@@ -416,30 +432,27 @@ public partial class NoiseMapEditor : Area3D
 						bool z_neg = z > 0 			 ? node.GetBlock(x, y, z - 1) : GetBlock(nx, ny, nz - 1);
 						bool z_pos = z < map.lod - 1 ? node.GetBlock(x, y, z + 1) : GetBlock(nx, ny, nz + 1);
 
-						if (!x_neg) { _add_face(i, node, x, y, z, _face_xneg, 0, color, mr); i += 6; }
-						if (!x_pos) { _add_face(i, node, x, y, z, _face_xpos, 1, color, mr); i += 6; }
-						if (!y_neg) { _add_face(i, node, x, y, z, _face_ypos, 2, color, mr); i += 6; }
-						if (!y_pos) { _add_face(i, node, x, y, z, _face_yneg, 3, color, mr); i += 6; }
-						if (!z_neg) { _add_face(i, node, x, y, z, _face_zpos, 5, color, mr); i += 6; }
-						if (!z_pos) { _add_face(i, node, x, y, z, _face_zneg, 4, color, mr); i += 6; }
+						if (!x_neg) { _add_face(i, node, x, y, z, _face_xneg, 0, color, mesh_resource); i += 6; }
+						if (!x_pos) { _add_face(i, node, x, y, z, _face_xpos, 1, color, mesh_resource); i += 6; }
+						if (!y_neg) { _add_face(i, node, x, y, z, _face_ypos, 2, color, mesh_resource); i += 6; }
+						if (!y_pos) { _add_face(i, node, x, y, z, _face_yneg, 3, color, mesh_resource); i += 6; }
+						if (!z_neg) { _add_face(i, node, x, y, z, _face_zpos, 5, color, mesh_resource); i += 6; }
+						if (!z_pos) { _add_face(i, node, x, y, z, _face_zneg, 4, color, mesh_resource); i += 6; }
 					}
 				}
 			}
 		}
 
-		//MeshInstance3D mesh_instance = new();
-		//mesh_instance.Position = node.Position;
-		mr.Position = node.Position;
+		mesh_resource.Position = node.Position;
 
 		ArrayMesh mesh = new();
-
 		Godot.Collections.Array arrays = [];
 		arrays.Resize((int)Mesh.ArrayType.Max);
 
-		arrays[(int)Mesh.ArrayType.Vertex] = mr._vertices;
-		arrays[(int)Mesh.ArrayType.Normal] = mr._normals;
-		arrays[(int)Mesh.ArrayType.TexUV] = mr._uvs;
-		arrays[(int)Mesh.ArrayType.Color] = mr._colors;
+		arrays[(int)Mesh.ArrayType.Vertex] = mesh_resource._vertices;
+		arrays[(int)Mesh.ArrayType.Normal] = mesh_resource._normals;
+		arrays[(int)Mesh.ArrayType.TexUV] = mesh_resource._uvs;
+		arrays[(int)Mesh.ArrayType.Color] = mesh_resource._colors;
 
 		Mesh.ArrayFormat flags = Mesh.ArrayFormat.FormatVertex | 
 								 Mesh.ArrayFormat.FormatNormal | 
@@ -449,13 +462,13 @@ public partial class NoiseMapEditor : Area3D
 		mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, null, null, flags);
 		if (map.material != null) mesh.SurfaceSetMaterial(0, map.material);
 
-		mr.Mesh = mesh;
+		mesh_resource.Mesh = mesh;
 
-		mutex_meshes.Lock();
-		meshes.Add(mr);
-		mutex_meshes.Unlock();
+		threads_mutex.Lock();
+		meshes.Add(mesh_resource);
+		threads_mutex.Unlock();
 
-		CallDeferred("add_child", mr);
+		CallDeferred("add_child", mesh_resource);
 
 		GD.Print($"Node {node_index}, pos:{node.Position}, Mesh {node.total_blocks} blocks, {node.face_count} faces. Finished...");
 	}
