@@ -5,18 +5,18 @@ using System.Threading;
 [Tool, GlobalClass]
 public partial class NoiseMapEditor : Area3D
 {
-	[ExportToolButton("Generate Cache")] public Callable generate_cache_button => Callable.From(() => generate_cache_threaded()); 
-	[ExportToolButton("Generate mesh")]  public Callable generate_mesh_button => Callable.From(() => generate_mesh_threaded()); 
+	[ExportToolButton("Generate Cache")] public Callable generate_cache_button => Callable.From(() => generate_cache_threaded());
+	[ExportToolButton("Cache Info")] 	 public Callable cache_info 		   => Callable.From(() => _show_details_of_cache());
+	[ExportToolButton("Generate mesh")]  public Callable generate_mesh_button  => Callable.From(() => generate_mesh_threaded());
 	
 	[Export] MapResource map;
 	
-	List<Thread> threads = new List<Thread>();
-	Godot.Mutex threads_mutex = new Godot.Mutex();
+	List<Thread> threads = new();
+	Godot.Mutex threads_mutex = new();
 	int thread_node_index;
+	int threads_count = 0;
 
 	List<MeshInstance3D> meshes;
-
-	int threads_count = 0;
 
 	void _show_details_of_cache()
 	{
@@ -128,7 +128,7 @@ public partial class NoiseMapEditor : Area3D
 		}
 	}
 
-	Vector3I max_pos = new Vector3I();
+	Vector3I max_pos = new();
 
 	bool check_map_setup()
 	{
@@ -217,8 +217,6 @@ public partial class NoiseMapEditor : Area3D
 		}
 	}
 
-	//_
-
 	void _thread_MAIN_generate_cache_data(int thread_id)
 	{
 		GD.Print($"Thread {thread_id} started");
@@ -243,7 +241,7 @@ public partial class NoiseMapEditor : Area3D
 		} while (node_index != -1);
 
 		SetThreadsCount(GetThreadsCount() - 1);
-		while (GetThreadsCount() > 0) Thread.Sleep(1);
+		while (GetThreadsCount() > 0) Thread.Yield(); // or Thread.Sleep(1)
 
 		GD.Print($"Thread {thread_id} counting faces...");
 
@@ -402,6 +400,7 @@ public partial class NoiseMapEditor : Area3D
 		OctNode node = map.nodes[node_index];
 
 		if (node.total_blocks == 0) return;
+		if (node.face_count == 0) return;
 
 		MeshResource mesh_resource = new();
 		mesh_resource.init(node.face_count);
@@ -475,7 +474,7 @@ public partial class NoiseMapEditor : Area3D
 
 	void _add_face(int i, OctNode node, int x, int y, int z, List<Vector3> face_vertices, int face_index, Color color, MeshResource mr)
 	{
-		Vector3 offset = new Vector3(x, y, z);
+		Vector3 offset = new(x, y, z);
 
 		mr._vertices[i]   = face_vertices[0] + offset;
 		mr._vertices[i+1] = face_vertices[1] + offset;

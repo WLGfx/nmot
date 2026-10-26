@@ -26,4 +26,19 @@ Can a GPU read bit values... Lets ask one...
 Yes they can with a usampler instead of sampler.
 
 However, this will be done using a compute shader using the noise data.
-((Qpalzm@12))
+
+Seperation of the cache generation from the mesh generation. Still needs testing as the
+mesh generation will crash from time to time.
+
+Currently
+
+Cache generation:
+    1. Count chunks and initialise all chunks
+    2. Each chunk processed on thread
+        a. Empty chunks store have no data
+        b. Repeat until all chunks done
+    3. Count faces for each chunk on thread
+        a. Repeat until all chunks faces have been counted
+    4. Cache data is ready
+
+Mesh generation:
